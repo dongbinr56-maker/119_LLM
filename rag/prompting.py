@@ -1,36 +1,75 @@
+"""
+rag/prompting.py
 
-"""rag/prompting.py
+이 파일은 AI 모델에게 보낼 프롬프트(질문 형식)를 만드는 함수를 담고 있습니다.
 
-RAG 답변 품질을 결정하는 것은 '프롬프트(규격)'입니다.
-여기서는 다음을 강제합니다:
+RAG 시스템에서 답변 품질을 결정하는 가장 중요한 것은 '프롬프트(질문 형식)'입니다.
+AI 모델은 프롬프트에 따라 답변의 형식, 정확도, 스타일이 달라집니다.
 
+이 파일에서는 다음을 강제합니다:
 - 제공된 CONTEXT(근거 조각) 밖의 내용을 단정하지 말 것
 - 반드시 '근거' 섹션에 페이지/섹션을 명시할 것
 - 근거가 부족하면 '추가 질문 1개'를 우선 제시할 것
 
 주의:
 - 의료/응급 처치 관련이므로 안전 문구를 포함합니다.
+- 실제 현장 처치에서는 소속 지침을 우선해야 한다는 것을 명시합니다.
 """
 
-from __future__ import annotations
+from __future__ import annotations  # 미래 버전 Python 호환성
 
-from typing import List
-from dataclasses import dataclass
+from typing import List  # 타입 힌팅용
 
-from .retriever import RetrievedChunk
+from .retriever import RetrievedChunk  # 검색 결과를 나타내는 데이터클래스
 
 
 def build_prompt(user_question: str, retrieved: List[RetrievedChunk]) -> str:
-    # 근거 조각을 보기 좋게 포맷
-    context_blocks = []
+    """
+    사용자 질문과 검색된 문서 조각들을 합쳐서 AI에게 보낼 프롬프트를 만듭니다.
+    
+    프롬프트는 다음 구조로 구성됩니다:
+    1. 시스템 규칙: AI가 따라야 할 규칙들
+    2. 사용자 질문: 사용자가 입력한 질문
+    3. CONTEXT: 검색된 문서 조각들 (근거)
+    4. 답변 요청: "[답변]"이라는 지시어
+    
+    Args:
+        user_question: 사용자가 입력한 질문 (예: "외상 환자 지혈은 어떻게 하나요?")
+        retrieved: 검색된 문서 조각들의 리스트 (유사도 점수 높은 순으로 정렬됨)
+    
+    Returns:
+        str: AI 모델에게 보낼 전체 프롬프트 문자열
+    """
+    # ========================================
+    # 1단계: 검색된 문서 조각들을 보기 좋게 포맷팅
+    # ========================================
+    context_blocks = []  # 각 문서 조각을 포맷팅한 문자열들을 담을 리스트
+    
+    # enumerate(retrieved, start=1): 리스트의 각 요소와 인덱스를 가져옴 (인덱스는 1부터 시작)
+    # i: 근거 번호 (1, 2, 3, ...)
+    # ch: RetrievedChunk 객체 (검색된 문서 조각 하나)
     for i, ch in enumerate(retrieved, start=1):
+        # f-string을 사용하여 각 문서 조각을 포맷팅
+        # [근거 {i}]: 근거 번호
+        # (score={ch.score:.3f}): 유사도 점수 (소수점 3자리)
+        # source={ch.source}: 문서 파일명
+        # p.{ch.page_start}-{ch.page_end}: 페이지 범위
+        # section={ch.section_path}: 섹션 경로
+        # {ch.text}: 문서 조각의 실제 텍스트 내용
         context_blocks.append(
             f"""[근거 {i}] (score={ch.score:.3f}) source={ch.source} p.{ch.page_start}-{ch.page_end} section={ch.section_path}
 {ch.text}
 """
         )
+    
+    # "\n\n".join(context_blocks): 각 문서 조각을 빈 줄 2개로 구분하여 연결
+    # .strip(): 앞뒤 공백 제거
     context = "\n\n".join(context_blocks).strip()
 
+    # ========================================
+    # 2단계: 시스템 규칙 정의 (AI가 따라야 할 지시사항)
+    # ========================================
+    # 이 규칙들이 AI의 답변 형식과 내용을 결정합니다
     system_rules = """너는 '119 구급대원 현장응급처치 표준지침(2023 개정)' PDF를 근거로만 답하는 보조 챗봇이다.
 
 규칙(매우 중요):
@@ -44,7 +83,16 @@ def build_prompt(user_question: str, retrieved: List[RetrievedChunk]) -> str:
 3) 근거가 애매하거나 부족하면, 답변을 길게 하지 말고 '추가 질문 1개'를 먼저 해라.
 4) 실제 현장 처치는 소속 지침/의료지도/교육을 우선한다는 안전 문구를 마지막에 1줄로 포함해라.
 """
+    # 규칙 설명:
+    # - 규칙 1: AI가 문서 밖의 지식을 사용하지 않도록 제한 (할루시네이션 방지)
+    # - 규칙 2: 일관된 답변 형식 유지 (사용자가 읽기 쉽게)
+    # - 규칙 3: 불확실한 정보로 오답을 만들지 않도록 함
+    # - 규칙 4: 법적/의료적 책임을 명확히 함 (안전 장치)
 
+    # ========================================
+    # 3단계: 전체 프롬프트 조립
+    # ========================================
+    # f-string을 사용하여 시스템 규칙, 사용자 질문, CONTEXT를 합침
     prompt = f"""{system_rules}
 
 [사용자 질문]
@@ -55,4 +103,10 @@ def build_prompt(user_question: str, retrieved: List[RetrievedChunk]) -> str:
 
 [답변]
 """
+    # 프롬프트 구조:
+    # 1. 시스템 규칙: AI의 역할과 규칙
+    # 2. [사용자 질문]: 사용자가 입력한 질문
+    # 3. [CONTEXT]: 검색된 문서 조각들 (근거)
+    # 4. [답변]: AI가 답변을 시작해야 한다는 지시어
+    
     return prompt
